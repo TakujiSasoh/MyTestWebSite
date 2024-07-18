@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ブラウザRPG（修正版）</title>
+    <style>
+        body,html{margin:0;padding:0;height:100%;font-family:Arial,sans-serif;background-color:#f0f0f0}
+        #game-container{display:flex;flex-direction:column;height:100%;max-width:800px;margin:0 auto;background-color:white;box-shadow:0 0 10px rgba(0,0,0,0.1)}
+        h1{text-align:center;padding:10px;margin:0;background-color:#4CAF50;color:white}
+        #game-area{display:flex;flex:1;overflow:hidden}
+        #map-container{flex:2;overflow:auto;position:relative}
+        #map{display:grid;grid-template-columns:repeat(15,1fr);gap:1px;background-color:#ccc;padding:1px}
+        .cell{aspect-ratio:1;display:flex;justify-content:center;align-items:center;font-size:2vw;background-color:#8fbc8f}
+        .wall{background-color:#a0522d}
+        #info-panel{flex:1;padding:10px;overflow-y:auto;display:flex;flex-direction:column}
+        #status,#message{margin-bottom:10px}
+        #actions{display:flex;flex-wrap:wrap;justify-content:center}
+        button{margin:5px;padding:10px;font-size:16px}
+        #enemy-display{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background-color:rgba(0,0,0,0.7);padding:20px;border-radius:10px;display:none;text-align:center}
+        #enemy-image{font-size:8vw;margin-bottom:10px}
+        #enemy-name{color:white;font-size:2vw;margin-bottom:10px}
+        @media (max-width:600px){#game-area{flex-direction:column}.cell{font-size:5vw}#enemy-image{font-size:20vw}#enemy-name{font-size:6vw}}
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <h1>ブラウザRPG（修正版）</h1>
+        <div id="game-area">
+            <div id="map-container">
+                <div id="map"></div>
+                <div id="enemy-display">
+                    <div id="enemy-image"></div>
+                    <div id="enemy-name"></div>
+                </div>
+            </div>
+            <div id="info-panel">
+                <div id="status"></div>
+                <div id="message"></div>
+                <div id="actions"></div>
+            </div>
+        </div>
+    </div>
+    <script>
+        const player={name:"勇者",hp:100,maxHp:100,attack:10,defense:5,magic:5,gold:0,exp:0,level:1,x:0,y:0};
+        const baseMonsters=[
+            {name:"スライム",hp:20,attack:5,defense:2,exp:10,gold:10,icon:'🧊'},
+            {name:"ゴブリン",hp:30,attack:8,defense:3,exp:15,gold:15,icon:'👺'},
+            {name:"オーク",hp:50,attack:12,defense:5,exp:25,gold:25,icon:'👽'}
+        ];
+        const baseBosses=[
+            {name:"ドラゴン",hp:100,attack:20,defense:10,exp:100,gold:100,icon:'🐉'},
+            {name:"デーモン",hp:150,attack:25,defense:15,exp:150,gold:150,icon:'😈'},
+            {name:"魔王",hp:200,attack:30,defense:20,exp:200,gold:200,icon:'🦹'}
+        ];
+        const icons={player:'🧙',floor:'　',wall:'🧱',chest:'🎁',boss:'👹'};
+        let currentMonster=null,map=[],stage=1,chestsCollected=0,totalChests=5;
+        const mapSize=15;
+
+        function initMap(){
+            map=Array(mapSize).fill().map(()=>Array(mapSize).fill('wall'));
+            generateMaze(1,1);
+            chestsCollected=0;
+            for(let i=0;i<totalChests;i++)placeItem('chest');
+            placeItem('player');
+            renderMap();
+        }
+
+        function generateMaze(x,y){
+            const directions=[[0,-1],[1,0],[0,1],[-1,0]].sort(()=>Math.random()-0.5);
+            map[y][x]='floor';
+            for(let [dx,dy] of directions){
+                let nx=x+dx*2,ny=y+dy*2;
+                if(nx>0&&nx<mapSize-1&&ny>0&&ny<mapSize-1&&map[ny][nx]==='wall'){
+                    map[y+dy][x+dx]='floor';
+                    generateMaze(nx,ny);
+                }
+            }
+        }
+
+        function placeItem(item){
+            let x,y;
+            do{x=Math.floor(Math.random()*mapSize);y=Math.floor(Math.random()*mapSize)}
+            while(map[y][x]!=='floor');
+            if(item==='player'){player.x=x;player.y=y}else{map[y][x]=item}
+        }
+
+        function renderMap(){
+            document.getElementById("map").innerHTML=map.map((row,y)=>row.map((cell,x)=>`<div class="cell ${cell}">${x===player.x&&y===player.y?icons.player:icons[cell]}</div>`).join('')).join('');
+        }
+
+        function movePlayer(dx,dy){
+            const newX=player.x+dx,newY=player.y+dy;
+            if(newX>=0&&newX<mapSize&&newY>=0&&newY<mapSize&&map[newY][newX]!=='wall'){
+                player.x=newX;player.y=newY;
+                renderMap();
+                if(map[player.y][player.x]==='chest'){
+                    const gold=Math.floor(Math.random()*50)+10;
+                    player.gold+=gold;map[player.y][player.x]='floor';chestsCollected++;
+                    showMessage(`宝箱を見つけた！${gold}ゴールドを手に入れた！`);
+                    if(chestsCollected===totalChests)spawnBoss();
+                }else if(map[player.y][player.x]==='boss'){
+                    startBattle(true);
+                }else if(Math.random()<0.2){
+                    startBattle(false);
+                }else{
+                    showMessage("安全に移動しました。");
+                    showMovementActions();
+                }
+            }else{
+                showMessage("そこには行けません。");
+                showMovementActions();
+            }
+            updateStatus();
+        }
+
+        function spawnBoss(){
+            currentMonster={...baseBosses[stage-1]};
+            scaleEnemy(currentMonster);
+            placeItem('boss');
+            showMessage(`全ての宝箱を見つけた！${currentMonster.name}が現れた！`);
+            renderMap();
+        }
+
+        function updateStatus(){
+            document.getElementById("status").innerHTML=`ステージ: ${stage} | ${player.name} - レベル: ${player.level} | HP: ${player.hp}/${player.maxHp} | 攻撃力: ${player.attack} | 防御力: ${player.defense} | 魔力: ${player.magic} | 経験値: ${player.exp} | ゴールド: ${player.gold} | 宝箱: ${chestsCollected}/${totalChests}`;
+        }
+
+        function showMessage(msg){document.getElementById("message").innerHTML=msg;}
+
+        function showActions(actions){
+            const actionsDiv = document.getElementById("actions");
+            actionsDiv.innerHTML = '';
+            actions.forEach(action => {
+                const button = document.createElement('button');
+                button.textContent = action.text;
+                button.addEventListener('click', action.onClick);
+                actionsDiv.appendChild(button);
+            });
+        }
+
+        function showMovementActions(){
+            showActions([
+                {text:"↑",onClick:()=>movePlayer(0,-1)},
+                {text:"↓",onClick:()=>movePlayer(0,1)},
+                {text:"←",onClick:()=>movePlayer(-1,0)},
+                {text:"→",onClick:()=>movePlayer(1,0)},
+                {text:"休憩",onClick:rest}
+            ]);
+        }
+
+        function scaleEnemy(enemy){
+            const scaleFactor=1+(stage-1)*0.2;
+            for(let key in enemy)if(typeof enemy[key]==='number')enemy[key]=Math.floor(enemy[key]*scaleFactor);
+        }
+
+        function startBattle(isBoss=false){
+            if (isBoss && currentMonster) {
+                // ボス戦の場合、currentMonsterは既に設定されているはず
+            } else {
+                currentMonster = {...baseMonsters[Math.floor(Math.random()*baseMonsters.length)]};
+                if (!isBoss) scaleEnemy(currentMonster);
+            }
+            showMessage(`${currentMonster.name}が現れた！`);
+            showBattleActions(isBoss);
+            displayEnemy(currentMonster);
+        }
+
+        function displayEnemy(enemy){
+            const display=document.getElementById('enemy-display');
+            display.innerHTML=`<div id="enemy-image">${enemy.icon}</div><div id="enemy-name">${enemy.name}</div>`;
+            display.style.display='block';
+        }
+
+        function showBattleActions(isBoss){
+            showActions([
+                {text:"攻撃",onClick:()=>battle(isBoss,"attack")},
+                {text:"魔法",onClick:()=>battle(isBoss,"magic")},
+                {text:"逃げる",onClick:()=>flee(isBoss)}
+            ]);
+        }
+
+        function battle(isBoss,type){
+            if (!currentMonster) return;
+            const damage=type==="magic"?Math.floor(player.magic*2*(0.8+Math.random()*0.4)):Math.max(1,player.attack-currentMonster.defense);
+            currentMonster.hp-=damage;
+            showMessage(`${player.name}の${type==="magic"?"魔法攻撃":"攻撃"}！${currentMonster.name}に${damage}のダメージ！`);
+            checkBattleResult(isBoss);
+        }
+
+        function checkBattleResult(isBoss){
+            if (!currentMonster) return;
+            if(currentMonster.hp<=0){
+                player.gold+=currentMonster.gold;
+                player.exp+=currentMonster.exp;
+                showMessage(`${currentMonster.name}を倒した！${currentMonster.gold}ゴールドと${currentMonster.exp}経験値を獲得！`);
+                checkLevelUp();
+                document.getElementById('enemy-display').style.display='none';
+                if(isBoss){
+                    completeStage();
+                } else {
+                    currentMonster = null;
+                    showMovementActions();
+                }
+            }else{
+                const damage=Math.max(1,currentMonster.attack-player.defense);
+                player.hp-=damage;
+                showMessage(`${currentMonster.name}の攻撃！${player.name}は${damage}のダメージを受けた！`);
+                if(player.hp<=0){
+                    gameOver();
+                }else{
+                    showBattleActions(isBoss);
+                }
+            }
+            updateStatus();
+        }
+
+        function completeStage(){
+            stage++;
+            showMessage(`ステージクリア！次のステージに進みます。`);
+            if(stage>baseBosses.length){
+                gameOver();
+            } else {
+                initMap();
+                showMovementActions();
+            }
+        }
+
+        function checkLevelUp(){
+            if(player.exp>=player.level*20){
+                player.level++;player.maxHp+=10;player.hp=player.maxHp;
+                player.attack+=2;player.defense+=1;player.magic+=1;player.exp=0;
+                showMessage(`レベルアップ！レベル${player.level}になった！`);
+                updateStatus();
+            }
+        }
+
+        function flee(isBoss){
+            if(isBoss){
+                showMessage("ボスからは逃げられない！");
+                showBattleActions(true);
+            }else if(Math.random()<0.5){
+                showMessage("無事に逃げ出した！");
+                document.getElementById('enemy-display').style.display='none';
+                currentMonster = null;
+                showMovementActions();
+            }else{
+                showMessage("逃げられなかった！");
+                const damage=Math.max(1,currentMonster.attack-player.defense);
+                player.hp-=damage;
+                showMessage(`${currentMonster.name}の攻撃！${player.name}は${damage}のダメージを受けた！`);
+                if(player.hp<=0){
+                    gameOver();
+                }else{
+                    showBattleActions(false);
+                }
+            }
+            updateStatus();
+        }
+
+        function rest(){
+            if(player.gold>=10){
+                player.gold-=10;player.hp=player.maxHp;
+                showMessage("全回復しました！");
+            }else{
+                showMessage("ゴールドが足りません！");
+            }
+            updateStatus();
+            showMovementActions();
+        }
+
+        function gameOver(){
+            document.getElementById('enemy-display').style.display='none';
+            showMessage(stage>baseBosses.length?"おめでとうございます！全てのステージをクリアしました！":"ゲームオーバー...");
+            showActions([{text:"最初から",onClick:init}]);
+        }
+
+        function init(){
+            Object.assign(player,{hp:100,maxHp:100,attack:10,defense:5,magic:5,gold:0,exp:0,level:1});
+            stage=1;
+            initMap();
+            updateStatus();
+            showMessage("冒険を始めましょう！");
+            showMovementActions();
+        }
+
+        init();
+    </script>
+</body>
+</html>
